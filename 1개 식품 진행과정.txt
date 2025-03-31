@@ -1,0 +1,157 @@
+# 'target': lambda df: (df['거래단위'] == '20 kg') & (df['등급'] == '상품')
+df_garlic = df[(df['품목명'] == '깐마늘(국산)') & (df['등급'] == '상품') & (df['거래단위'] == '20 kg')]
+df_garlic['ds'] = df_garlic['시점'].apply(convert_custom_date)
+df_garlic
+
+visualize_average_price_train(df_garlic)
+
+공판장_깐마늘 = 산지공판장_data[(산지공판장_data['품종명'] == '깐마늘') &
+                                 (산지공판장_data['등급명'] == '상')]
+
+도매_깐마늘 = 전국도매_data[(전국도매_data['품종명'] == '깐마늘')]
+
+공판장_깐마늘_clean = drop_columns(공판장_깐마늘, ['공판장코드', '공판장명', '품목코드', '품종코드'])
+공판장_깐마늘_clean['ds'] = 공판장_깐마늘_clean['시점'].apply(convert_custom_date)
+공판장_깐마늘_clean
+
+visualize_average_price_공판장(공판장_깐마늘_clean, kg=20)
+
+
+
+df_to_filter = 공판장_깐마늘_clean[
+    (공판장_깐마늘_clean['ds'] >= '2018-07-01') & 
+    (공판장_깐마늘_clean['ds'] <= '2019-01-31')
+]
+
+df_filtered_cleaned = df_to_filter[
+    (df_to_filter['20kg당 가격'] <= 120000) & 
+    (df_to_filter['20kg당 가격'] > 40000)
+]
+
+df_remaining = 공판장_깐마늘_clean[
+    (공판장_깐마늘_clean['ds'] < '2018-07-01') | 
+    (공판장_깐마늘_clean['ds'] > '2019-01-31')
+]
+
+df_final = pd.concat([df_remaining, df_filtered_cleaned]).sort_values('ds')
+
+
+
+df_to_filter = df_final[
+    (df_final['ds'] >= '2020-10-01') & 
+    (df_final['ds'] <= '2021-03-01')
+]
+
+df_filtered_cleaned = df_to_filter[
+    (df_to_filter['20kg당 가격'] <= 120000) & 
+    (df_to_filter['20kg당 가격'] > 40000)
+]
+
+df_remaining = df_final[
+    (df_final['ds'] < '2020-10-01') | 
+    (df_final['ds'] > '2021-03-01')
+]
+
+df_final = pd.concat([df_remaining, df_filtered_cleaned]).sort_values('ds')
+
+
+
+plt.figure(figsize=(12, 6))
+plt.plot(df_final['ds'], df_final['20kg당 가격'], color='blue', marker='o', label='20kg당 가격')
+plt.title('공판장 깐마늘 ds별 20kg당 가격 변화 (이상치 제거 후)')
+plt.xlabel('날짜 (ds)')
+plt.ylabel('20kg당 가격 (원)')
+plt.legend()
+plt.grid(True)
+plt.xticks(rotation=45)
+plt.show()
+
+df_final
+
+공판장_깐마늘_last = df_final.copy()
+공판장_깐마늘_last
+
+
+
+
+
+도매_깐마늘_clean = drop_columns(도매_깐마늘, ['시장코드', '시장명', '품목코드', '품종코드'])
+도매_깐마늘_clean['ds']= 도매_깐마늘_clean['시점'].apply(convert_custom_date)
+도매_깐마늘_clean
+
+
+# 1. Prophet 모델에 사용할 공판장 깐마늘 데이터 준비
+df_prophet_garlic = 공판장_깐마늘_last[['ds', '20kg당 가격']].rename(columns={'20kg당 가격': 'y'})
+
+# 2. ds 열을 datetime 형식으로 변환
+df_prophet_garlic['ds'] = pd.to_datetime(df_prophet_garlic['ds'])
+
+# 3. Prophet 모델 학습
+model_garlic = Prophet()
+model_garlic.fit(df_prophet_garlic)
+
+# 4. 미래 예측 데이터 생성 (기존 데이터로 충분하므로 periods=0)
+future_garlic = model_garlic.make_future_dataframe(periods=0)
+
+# 5. 예측 수행
+forecast_garlic = model_garlic.predict(future_garlic)
+
+# 6. 예측 결과와 공판장 데이터 병합 (ds 기준)
+forecast_garlic['ds'] = pd.to_datetime(forecast_garlic['ds'])  # 형식 일치
+df_prophet_garlic = df_prophet_garlic.join(
+    forecast_garlic[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].set_index('ds'),
+    on='ds'
+)
+
+# 7. 병합된 데이터 확인
+print(df_prophet_garlic.head())
+
+
+plt.figure(figsize=(12, 6))
+
+# 실제 데이터 시각화 (20kg당 가격)
+plt.plot(df_prophet_garlic['ds'], df_prophet_garlic['y'], label='실제 20kg당 가격', marker='o', linestyle='-', color='blue')
+
+# 예측된 가격 시각화 (yhat)
+plt.plot(df_prophet_garlic['ds'], df_prophet_garlic['yhat'], label='예측 20kg당 가격 (yhat)', marker='x', linestyle='--', color='green')
+
+plt.title('공판장 깐마늘 20kg당 가격 예측 vs 실제')
+plt.xlabel('날짜 (ds)')
+plt.ylabel('20kg당 가격 (원)')
+plt.legend()
+plt.grid(True)
+plt.xticks(rotation=45)
+plt.show()
+
+도매_깐마늘_clean['20kg당 가격'] = 도매_깐마늘_clean['평균가(원/kg)'] * 20
+
+# 1. 도매_깐마늘_clean 데이터에 예측 값 병합
+도매_깐마늘_병합 = pd.merge(
+    도매_깐마늘_clean,
+    df_prophet_garlic[['ds', 'yhat_lower', 'yhat_upper']],
+    on='ds',
+    how='inner'
+)
+
+# 2. '상' 등급 판별: 예측 구간(yhat_lower, yhat_upper) 내에 포함된 데이터는 '상' 등급으로 설정
+도매_깐마늘_병합['등급'] = 도매_깐마늘_병합.apply(
+    lambda row: '상' if row['20kg당 가격'] >= row['yhat_lower'] and row['20kg당 가격'] <= row['yhat_upper'] else '기타',
+    axis=1
+)
+
+# 3. '상' 등급 데이터 필터링
+도매_깐마늘_상등급 = 도매_깐마늘_병합[도매_깐마늘_병합['등급'] == '상']
+
+plt.figure(figsize=(12, 6))
+# plt.plot(도매_깐마늘_clean['ds'], 도매_깐마늘_clean['20kg당 가격'], label='전체 데이터', marker='o', color='gray', alpha=0.5)
+plt.plot(도매_깐마늘_상등급['ds'], 도매_깐마늘_상등급['20kg당 가격'], label='상 등급', marker='o', linestyle='', color='blue')
+
+plt.title('도매 깐마늘 데이터에서 상 등급 확인')
+plt.xlabel('날짜 (ds)')
+plt.ylabel('20kg당 가격 (원)')
+plt.legend()
+plt.xticks(rotation=45)
+plt.grid(True)
+plt.show()
+
+도매_깐마늘_last = 도매_깐마늘_상등급.copy()
